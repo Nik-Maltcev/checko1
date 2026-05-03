@@ -26,7 +26,7 @@ HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
 DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
 MAIL_TM_BASE = "https://api.mail.tm"
 CHECKO_REGISTER = "https://checko.ru/sign-up"
-CHECKO_PROFILE  = "https://checko.ru/user/profile"
+CHECKO_PROFILE  = "https://checko.ru/user/account/api"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -193,43 +193,59 @@ async def confirm_email_in_browser(page, confirm_url: str) -> bool:
 
 async def get_api_key(page) -> str | None:
     """
-    Зайти в профиль и вытащить API-ключ.
-    Адаптируй селекторы под реальную страницу профиля.
+    Зайти на страницу API и вытащить ключ после текста 'Ваш API ключ'.
     """
     try:
         await page.goto(CHECKO_PROFILE, wait_until="networkidle", timeout=30_000)
         await page.wait_for_timeout(2000)
 
-        # Попробуем найти API-ключ по разным признакам
-        api_key_selectors = [
-            '[data-api-key]',
-            '.api-key',
-            '#api_key',
+        # Скриншот страницы API для отладки
+        try:
+            import glob
+            existing = glob.glob("debug_api_*.png")
+            if len(existing) < 3:
+                idx = len(existing) + 1
+                await page.screenshot(path=f"debug_api_{idx}.png", full_page=True)
+                print(f"  [~] Скриншот API страницы: debug_api_{idx}.png")
+        except Exception:
+            pass
+
+        # Вариант 1: ищем элемент рядом с текстом "Ваш API ключ"
+        # Пробуем взять следующий sibling или вложенный элемент
+        selectors = [
+            # input или code внутри блока с API ключом
             'input[name*="api"]',
+            'input[id*="api"]',
+            'input[value*="api"]',
+            '.api-key',
+            '#api-key',
             'code',
             'pre',
         ]
-        for sel in api_key_selectors:
+        for sel in selectors:
             el = page.locator(sel).first
             if await el.is_visible():
-                text = await el.inner_text()
-                text = text.strip()
-                if len(text) > 10:
-                    return text
+                val = await el.input_value() if sel.startswith('input') else await el.inner_text()
+                val = val.strip()
+                if len(val) > 8:
+                    print(f"  [+] API ключ найден через селектор '{sel}'")
+                    return val
 
-        # Если не нашли — ищем в тексте страницы
-        content = await page.content()
-        # Типичный паттерн API-ключа: 32+ hex символов или UUID
-        patterns = [
-            r'[0-9a-f]{32,}',
-            r'[0-9a-zA-Z\-]{36}',  # UUID
-        ]
-        for pat in patterns:
-            matches = re.findall(pat, content)
-            if matches:
-                return matches[0]
+        # Вариант 2: парсим текст страницы — берём слово после "Ваш API ключ"
+        content = await page.inner_text("body")
+        match = re.search(r'Ваш API ключ[:\s]+([A-Za-z0-9_\-]{8,})', content)
+        if match:
+            return match.group(1).strip()
 
+        # Вариант 3: ищем в HTML — вдруг ключ в value или data-атрибуте
+        html = await page.content()
+        match = re.search(r'Ваш API ключ.*?([A-Za-z0-9_\-]{20,})', html, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        print("  [!] API ключ не найден на странице")
         return None
+
     except Exception as e:
         print(f"  [!] Ошибка получения API-ключа: {e}")
         return None

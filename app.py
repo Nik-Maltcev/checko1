@@ -375,10 +375,14 @@ HTML = """
       else if (line.includes("[!]") || line.includes("Ошибка")) cls = "err";
       else if (line.includes("[~]") || line.includes("WARNING")) cls = "warn";
       // Скриншоты — кликабельная ссылка
-      const screenshotMatch = line.match(/debug_(\d+)\.png/);
+      const screenshotMatch = line.match(/debug_(confirm_|api_)?(\d+)\.png/);
       if (screenshotMatch) {
-        const n = screenshotMatch[1];
-        return `<div class="${cls}">${line} → <a href="/debug/${n}" target="_blank" style="color:#7dd3fc">открыть</a></div>`;
+        const prefix = screenshotMatch[1] || "";
+        const n = screenshotMatch[2];
+        const url = prefix === "confirm_" ? `/debug/confirm/${n}`
+                  : prefix === "api_"     ? `/debug/api/${n}`
+                  : `/debug/${n}`;
+        return `<div class="${cls}">${line} → <a href="${url}" target="_blank" style="color:#7dd3fc">открыть</a></div>`;
       }
       return `<div class="${cls}">${line}</div>`;
     }).join("") || '<div style="color:#334155">Лог пуст</div>';
@@ -615,6 +619,15 @@ def debug_screenshot(idx: int):
 @app.route("/debug/confirm/<int:idx>")
 def debug_confirm_screenshot(idx: int):
     path = f"debug_confirm_{idx}.png"
+    if not os.path.exists(path):
+        return "Not found", 404
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="image/png")
+
+
+@app.route("/debug/api/<int:idx>")
+def debug_api_screenshot(idx: int):
+    path = f"debug_api_{idx}.png"
     if not os.path.exists(path):
         return "Not found", 404
     with open(path, "rb") as f:
