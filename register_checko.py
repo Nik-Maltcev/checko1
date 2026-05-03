@@ -1,10 +1,10 @@
 """
-Скрипт для массовой регистрации аккаунтов на checko.ru
-Временная почта: mail.tm (бесплатный API, без ключа)
-
-Зависимости:
-    pip install playwright requests
-    playwright install chromium
+1. mail.tm — создать почту
+2. checko.ru/sign-up — зарегистрироваться
+3. mail.tm — перейти по ссылке подтверждения
+4. checko.ru/login — войти
+5. checko.ru/user/account/api — скопировать API ключ
+6. Повторить 30 раз
 """
 
 import asyncio
@@ -16,328 +16,191 @@ import re
 import os
 
 import requests
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright
 
 # ─── Настройки ────────────────────────────────────────────────────────────────
-ACCOUNTS_COUNT  = int(os.environ.get("ACCOUNTS_COUNT", 30))
-OUTPUT_CSV      = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
-HEADLESS        = os.environ.get("HEADLESS", "True").lower() != "false"
-DELAY_BETWEEN   = int(os.environ.get("DELAY_BETWEEN", 5))
-CHECKO_REGISTER = "https://checko.ru/sign-up"
-CHECKO_LOGIN    = "https://checko.ru/login"
-CHECKO_API_PAGE = "https://checko.ru/user/account/api"
-MAIL_TM_BASE    = "https://api.mail.tm"
-# ──────────────────────────────────────────────────────────────────────────────
+ACCOUNTS_COUNT = int(os.environ.get("ACCOUNTS_COUNT", 30))
+OUTPUT_CSV     = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
+HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
+DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
+MAIL_TM        = "https://api.mail.tm"
 
 
-def random_password(length: int = 14) -> str:
-    chars = string.ascii_letters + string.digits + "!@#$%"
-    return "".join(random.choices(chars, k=length))
+def rand_pass(n=14):
+    return "".join(random.choices(string.ascii_letters + string.digits + "!@#$", k=n))
+
+def rand_user(n=10):
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 
-def random_username(length: int = 10) -> str:
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+# ─── mail.tm ──────────────────────────────────────────────────────────────────
 
+def mailtm_domain():
+    r = requests.get(f"{MAIL_TM}/domains", timeout=15)
+    return r.json()["hydra:member"][0]["domain"]
 
-# ─── mail.tm API ──────────────────────────────────────────────────────────────
+def mailtm_create(addr, pwd):
+    requests.post(f"{MAIL_TM}/accounts", json={"address": addr, "password": pwd}, timeout=15)
 
-def get_mailtm_domain() -> str:
-    r = requests.get(f"{MAIL_TM_BASE}/domains", timeout=15)
-    r.raise_for_status()
-    domains = r.json().get("hydra:member", [])
-    if not domains:
-        raise RuntimeError("mail.tm не вернул ни одного домена")
-    return domains[0]["domain"]
-
-
-def create_mailtm_account(address: str, password: str) -> dict:
-    r = requests.post(
-        f"{MAIL_TM_BASE}/accounts",
-        json={"address": address, "password": password},
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-def get_mailtm_token(address: str, password: str) -> str:
-    r = requests.post(
-        f"{MAIL_TM_BASE}/token",
-        json={"address": address, "password": password},
-        timeout=15,
-    )
-    r.raise_for_status()
+def mailtm_token(addr, pwd):
+    r = requests.post(f"{MAIL_TM}/token", json={"address": addr, "password": pwd}, timeout=15)
     return r.json()["token"]
 
-
-def wait_for_confirmation_link(token: str, timeout: int = 60) -> str | None:
-    """Ждём письмо от checko.ru и возвращаем ссылку подтверждения."""
+def mailtm_wait_link(token, timeout=60):
+    """Ждём письмо от checko и возвращаем первую ссылку."""
     headers = {"Authorization": f"Bearer {token}"}
     deadline = time.time() + timeout
-    seen_ids = set()
-
     while time.time() < deadline:
-        try:
-            r = requests.get(f"{MAIL_TM_BASE}/messages", headers=headers, timeout=15)
-            if r.status_code != 200:
-                time.sleep(3)
-                continue
-            messages = r.json().get("hydra:member", [])
-            for msg in messages:
-                msg_id = msg["id"]
-                if msg_id in seen_ids:
-                    continue
-                seen_ids.add(msg_id)
-
-                detail = requests.get(
-                    f"{MAIL_TM_BASE}/messages/{msg_id}",
-                    headers=headers, timeout=15,
-                ).json()
-
-                body = (detail.get("text", "") or "") + (detail.get("html", "") or "")
-                links = re.findall(r'https?://checko\.ru[^\s"\'<>\)]+', body)
-                # Фильтруем ссылки подтверждения
-                confirm = [l for l in links
-                           if any(kw in l for kw in
-                                  ("confirm", "verify", "activate", "token",
-                                   "email", "user"))]
-                if not confirm:
-                    confirm = [l for l in links if l.rstrip("/") != "https://checko.ru"]
-                if confirm:
-                    return confirm[0]
-        except Exception as e:
-            print(f"  [~] Ошибка проверки почты: {e}")
+        r = requests.get(f"{MAIL_TM}/messages", headers=headers, timeout=15)
+        for msg in r.json().get("hydra:member", []):
+            detail = requests.get(f"{MAIL_TM}/messages/{msg['id']}", headers=headers, timeout=15).json()
+            body = (detail.get("text", "") or "") + (detail.get("html", "") or "")
+            links = re.findall(r'https?://checko\.ru[^\s"\'<>\)]+', body)
+            links = [l for l in links if l.rstrip("/") != "https://checko.ru"]
+            if links:
+                return links[0]
         time.sleep(3)
     return None
 
 
-# ─── Checko: регистрация ──────────────────────────────────────────────────────
+# ─── Один аккаунт ─────────────────────────────────────────────────────────────
 
-async def register_on_checko(page, email: str, password: str) -> bool:
+async def create_one_account(browser, email, password, token, idx):
+    """Полный цикл: регистрация → подтверждение → логин → API ключ."""
+
+    ctx = await browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+    )
+    page = await ctx.new_page()
+
     try:
-        await page.goto(CHECKO_REGISTER, wait_until="networkidle", timeout=30_000)
+        # ── Шаг 1: Регистрация ──
+        print(f"  [1] Открываю /sign-up...")
+        await page.goto("https://checko.ru/sign-up", wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # Закрываем cookie-баннер если есть
-        try:
-            cookie_btn = page.locator('button:has-text("×"), .cookie-close, [aria-label="Close"]').first
-            if await cookie_btn.is_visible(timeout=1000):
-                await cookie_btn.click()
-                await page.wait_for_timeout(500)
-        except Exception:
-            pass
+        # Заполняем email
+        await page.fill('input[type="email"]', email)
 
-        # Скриншот ДО заполнения — видим форму
-        try:
-            import glob
-            existing = glob.glob("debug_before_*.png")
-            if len(existing) < 2:
-                idx = len(existing) + 1
-                await page.screenshot(path=f"debug_before_{idx}.png", full_page=True)
-                print(f"  [~] Скриншот до заполнения: debug_before_{idx}.png")
-        except Exception:
-            pass
+        # Заполняем оба поля пароля
+        pwd_inputs = page.locator('input[type="password"]')
+        for i in range(await pwd_inputs.count()):
+            await pwd_inputs.nth(i).fill(password)
 
-        # Email — пробуем несколько селекторов
-        email_filled = False
-        for sel in ['input[type="email"]', 'input[name="email"]', 'input[name="user[email]"]',
-                     'input[placeholder*="mail" i]', 'input[placeholder*="почт" i]', '#email']:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=1000):
-                    await el.fill(email)
-                    email_filled = True
-                    print(f"  [~] Email заполнен через: {sel}")
-                    break
-            except Exception:
-                continue
-        if not email_filled:
-            print("  [!] Не нашёл поле email!")
-            return False
+        # Ставим галочку
+        cb = page.locator('input[type="checkbox"]')
+        if await cb.count() > 0 and not await cb.first.is_checked():
+            await cb.first.click(force=True)
 
-        # Пароль + подтверждение
-        pwd_fields = page.locator('input[type="password"]')
-        count = await pwd_fields.count()
-        print(f"  [~] Найдено полей пароля: {count}")
-        for i in range(count):
-            await pwd_fields.nth(i).fill(password)
+        # Скриншот заполненной формы
+        await page.screenshot(path=f"debug_filled_{idx}.png", full_page=True)
+        print(f"  [~] Скриншот заполненной формы: debug_filled_{idx}.png")
 
-        # Чекбокс согласия
-        try:
-            checkbox = page.locator('input[type="checkbox"]').first
-            if await checkbox.is_visible(timeout=1000):
-                if not await checkbox.is_checked():
-                    await checkbox.check(force=True)
-                    print("  [~] Чекбокс отмечен")
-        except Exception:
-            print("  [~] Чекбокс не найден или уже отмечен")
-
-        await page.wait_for_timeout(500)
-
-        # Кнопка отправки
-        submitted = False
-        for sel in ['button:has-text("Зарегистрироваться")', 'input[type="submit"]',
-                     'button[type="submit"]', 'button:has-text("Регистрация")']:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=1000):
-                    await btn.click()
-                    submitted = True
-                    print(f"  [~] Кнопка нажата: {sel}")
-                    break
-            except Exception:
-                continue
-        if not submitted:
-            print("  [!] Не нашёл кнопку отправки!")
-
-        # Ждём навигацию или ответ
+        # Нажимаем "Зарегистрироваться"
+        await page.click('button:has-text("Зарегистрироваться")')
         await page.wait_for_timeout(4000)
 
         url_after = page.url
-        print(f"  [~] URL после формы: {url_after}")
+        print(f"  [~] URL после регистрации: {url_after}")
+        await page.screenshot(path=f"debug_after_{idx}.png", full_page=True)
+        print(f"  [~] Скриншот после регистрации: debug_after_{idx}.png")
 
-        # Скриншот ПОСЛЕ отправки
-        try:
-            import glob
-            existing = glob.glob("debug_reg_*.png")
-            if len(existing) < 3:
-                idx = len(existing) + 1
-                await page.screenshot(path=f"debug_reg_{idx}.png", full_page=True)
-                print(f"  [~] Скриншот регистрации: debug_reg_{idx}.png")
-        except Exception:
-            pass
+        if "sign-up" in url_after:
+            # Форма не ушла — выводим текст ошибки
+            text = await page.inner_text("body")
+            print(f"  [!] Форма не отправилась. Текст страницы:\n{text[:500]}")
+            return None
 
-        # Проверяем ошибки
-        if url_after.rstrip("/").endswith("sign-up"):
-            body = await page.inner_text("body")
-            for line in body.splitlines():
-                line = line.strip()
-                if line and any(kw in line.lower() for kw in
-                                ("недопустим", "некорректн", "уже зарегистр",
-                                 "ошибка", "error", "invalid", "already", "занят")):
-                    print(f"  [!] Ошибка формы: {line[:120]}")
-            return False
+        # ── Шаг 2: Ждём письмо на mail.tm ──
+        print(f"  [2] Ждём письмо от checko.ru...")
+        link = mailtm_wait_link(token, timeout=60)
+        if not link:
+            print(f"  [!] Письмо не пришло за 60с")
+            return None
+        print(f"  [+] Ссылка подтверждения: {link[:80]}")
 
-        return True
-
-    except PlaywrightTimeout as e:
-        print(f"  [!] Timeout: {e}")
-        return False
-    except Exception as e:
-        print(f"  [!] Ошибка регистрации: {e}")
-        return False
-
-
-async def login_on_checko(page, email: str, password: str) -> bool:
-    try:
-        await page.goto(CHECKO_LOGIN, wait_until="networkidle", timeout=30_000)
-        await page.wait_for_timeout(1000)
-
-        await page.locator('input[type="email"]').first.fill(email)
-        await page.locator('input[type="password"]').first.fill(password)
-
-        submit = page.locator('button:has-text("Войти")').first
-        if not await submit.is_visible():
-            submit = page.locator('button[type="submit"]').first
-        await submit.click()
-        await page.wait_for_timeout(3000)
-
-        print(f"  [~] URL после логина: {page.url}")
-        return True
-    except Exception as e:
-        print(f"  [!] Ошибка логина: {e}")
-        return False
-
-
-async def confirm_email_in_browser(page, confirm_url: str) -> bool:
-    try:
-        await page.goto(confirm_url, wait_until="networkidle", timeout=30_000)
+        # ── Шаг 3: Переходим по ссылке подтверждения ──
+        print(f"  [3] Подтверждаю email...")
+        await page.goto(link, wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
         print(f"  [~] URL после подтверждения: {page.url}")
-        return True
-    except Exception as e:
-        print(f"  [!] Ошибка подтверждения: {e}")
-        return False
 
+        # ── Шаг 4: Логин ──
+        print(f"  [4] Вхожу в аккаунт...")
+        await page.goto("https://checko.ru/login", wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(1000)
+        await page.fill('input[type="email"]', email)
+        await page.fill('input[type="password"]', password)
+        await page.click('button:has-text("Войти")')
+        await page.wait_for_timeout(3000)
+        print(f"  [~] URL после логина: {page.url}")
 
-async def get_api_key(page) -> str | None:
-    try:
-        await page.goto(CHECKO_API_PAGE, wait_until="networkidle", timeout=30_000)
+        # ── Шаг 5: Получаем API ключ ──
+        print(f"  [5] Открываю страницу API...")
+        await page.goto("https://checko.ru/user/account/api", wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
         print(f"  [~] URL страницы API: {page.url}")
 
-        if "/login" in page.url or "new_session" in page.url:
-            print("  [!] Не авторизованы — редирект на логин")
+        if "/login" in page.url:
+            print(f"  [!] Редирект на логин — не авторизованы")
             return None
 
-        # Скриншот
-        try:
-            import glob
-            existing = glob.glob("debug_api_*.png")
-            if len(existing) < 3:
-                idx = len(existing) + 1
-                await page.screenshot(path=f"debug_api_{idx}.png", full_page=True)
-                print(f"  [~] Скриншот API: debug_api_{idx}.png")
-        except Exception:
-            pass
+        await page.screenshot(path=f"debug_api_{idx}.png", full_page=True)
 
-        # Ищем ключ в тексте
-        content = await page.inner_text("body")
-        print(f"  [~] Текст страницы API (первые 300 символов): {content[:300]}")
+        # Берём текст страницы и ищем ключ
+        text = await page.inner_text("body")
+        print(f"  [~] Текст API страницы: {text[:400]}")
 
-        match = re.search(r'(?:Ваш API ключ|API key|api.key)[:\s]*([A-Za-z0-9_\-]{10,})', content, re.IGNORECASE)
+        # Ищем ключ — обычно после "Ваш API ключ"
+        match = re.search(r'(?:Ваш API[- ]?ключ|Your API[- ]?key)[:\s]*([A-Za-z0-9_\-]{10,})', text, re.IGNORECASE)
         if match:
             return match.group(1).strip()
 
-        # Ищем в HTML
-        html = await page.content()
-        match = re.search(r'(?:api.key|api_key|apikey)["\s:=]+([A-Za-z0-9_\-]{16,})', html, re.IGNORECASE)
+        # Может ключ просто длинная строка на странице
+        match = re.search(r'\b[a-f0-9]{32,}\b', text)
         if match:
-            return match.group(1).strip()
+            return match.group(0)
 
-        # Ищем input/code
-        for sel in ['input[name*="api"]', 'input[id*="api"]', 'code', 'pre', '.api-key']:
+        # Ищем в input
+        for sel in ['input[readonly]', 'input[name*="api"]', 'input[id*="api"]', 'code']:
             try:
                 el = page.locator(sel).first
                 if await el.is_visible(timeout=1000):
-                    val = (await el.input_value() if sel.startswith("input")
-                           else await el.inner_text())
-                    val = val.strip()
-                    if len(val) > 10:
-                        return val
-            except Exception:
-                continue
+                    val = await el.input_value() if "input" in sel else await el.inner_text()
+                    if len(val.strip()) > 10:
+                        return val.strip()
+            except:
+                pass
 
-        print("  [!] API ключ не найден")
+        print(f"  [!] API ключ не найден")
         return None
+
     except Exception as e:
-        print(f"  [!] Ошибка получения API ключа: {e}")
+        print(f"  [!] Ошибка: {e}")
         return None
+    finally:
+        await ctx.close()
 
 
-# ─── Статус ───────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
-def _set_running_flag(running: bool, total: int = 0):
+def _set_status(running, total=0):
     with open(".status", "w") as f:
         f.write(f"{running}|{total}")
 
 
-# ─── Основной цикл ────────────────────────────────────────────────────────────
-
 async def main():
-    print(f"[*] Старт. Создаём {ACCOUNTS_COUNT} аккаунтов...")
-    _set_running_flag(True, ACCOUNTS_COUNT)
+    print(f"[*] Старт: {ACCOUNTS_COUNT} аккаунтов")
+    _set_status(True, ACCOUNTS_COUNT)
 
-    # Получаем домен mail.tm
-    domain = get_mailtm_domain()
-    print(f"[*] Домен mail.tm: @{domain}")
+    domain = mailtm_domain()
+    print(f"[*] Домен: @{domain}")
 
     results = []
-    csv_file   = open(OUTPUT_CSV, "w", newline="", encoding="utf-8")
-    csv_writer = csv.DictWriter(csv_file, fieldnames=["login", "password", "api_key"],
-                                delimiter="|")
-    csv_writer.writeheader()
-    csv_file.flush()
+    f = open(OUTPUT_CSV, "w", newline="", encoding="utf-8")
+    w = csv.DictWriter(f, fieldnames=["login", "password", "api_key"], delimiter="|")
+    w.writeheader()
+    f.flush()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -346,70 +209,44 @@ async def main():
         )
 
         for i in range(1, ACCOUNTS_COUNT + 1):
-            print(f"\n[{i}/{ACCOUNTS_COUNT}] ─────────────────────────────")
+            print(f"\n{'='*50}")
+            print(f"[{i}/{ACCOUNTS_COUNT}]")
 
-            username = random_username(10)
-            email    = f"{username}@{domain}"
-            password = random_password()
+            user = rand_user()
+            email = f"{user}@{domain}"
+            password = rand_pass()
 
-            # 1. Создать email на mail.tm
+            # Создаём почту
             try:
-                create_mailtm_account(email, password)
-                token = get_mailtm_token(email, password)
-                print(f"  [+] Email создан: {email}")
+                mailtm_create(email, password)
+                token = mailtm_token(email, password)
+                print(f"  [+] Почта: {email}")
             except Exception as e:
-                print(f"  [!] Ошибка mail.tm: {e}")
+                print(f"  [!] mail.tm ошибка: {e}")
                 continue
 
-            # 2. Регистрация на checko.ru
-            ctx  = await browser.new_context(user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ))
-            page = await ctx.new_page()
+            # Полный цикл
+            api_key = await create_one_account(browser, email, password, token, i)
 
-            ok = await register_on_checko(page, email, password)
-            if not ok:
-                print("  [!] Регистрация не удалась")
-                await ctx.close()
-                continue
+            row = {"login": email, "password": password, "api_key": api_key or "NOT_FOUND"}
+            results.append(row)
+            w.writerow(row)
+            f.flush()
 
-            print("  [+] Форма отправлена, ждём письмо (до 60с)...")
-
-            # 3. Ждём подтверждение email
-            confirm_url = wait_for_confirmation_link(token, timeout=60)
-            if confirm_url:
-                print(f"  [+] Ссылка: {confirm_url[:70]}...")
-                await confirm_email_in_browser(page, confirm_url)
-                await login_on_checko(page, email, password)
-            else:
-                print("  [~] Письмо не пришло — пробуем войти")
-                await login_on_checko(page, email, password)
-
-            # 4. API ключ
-            api_key = await get_api_key(page)
             if api_key:
-                print(f"  [+] API ключ: {api_key[:24]}...")
+                print(f"  [✓] Готово: {api_key[:24]}...")
             else:
-                api_key = "NOT_FOUND"
-
-            results.append({"login": email, "password": password, "api_key": api_key})
-            csv_writer.writerow({"login": email, "password": password, "api_key": api_key})
-            csv_file.flush()
-            print(f"  [+] Сохранено ({len(results)}/{ACCOUNTS_COUNT})")
-
-            await ctx.close()
+                print(f"  [✗] API ключ не получен")
 
             if i < ACCOUNTS_COUNT:
-                print(f"  [~] Пауза {DELAY_BETWEEN}с...")
+                print(f"  [~] Пауза {DELAY_BETWEEN}с")
                 await asyncio.sleep(DELAY_BETWEEN)
 
         await browser.close()
 
-    csv_file.close()
-    _set_running_flag(False)
-    print(f"\n[✓] Готово! {len(results)} аккаунтов в {OUTPUT_CSV}")
+    f.close()
+    _set_status(False)
+    print(f"\n[✓] Итого: {len(results)} аккаунтов в {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
