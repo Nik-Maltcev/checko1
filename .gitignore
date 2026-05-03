@@ -1,0 +1,5 @@
+checko_accounts.csv
+.status
+__pycache__/
+*.pyc
+.env

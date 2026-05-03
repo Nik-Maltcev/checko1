@@ -1,0 +1,10 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "bash start.sh"
+restartPolicyType = "never"
+
+[[services]]
+internalPort = 5000
