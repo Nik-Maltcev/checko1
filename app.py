@@ -379,7 +379,8 @@ HTML = """
       if (screenshotMatch) {
         const prefix = screenshotMatch[1] || "";
         const n = screenshotMatch[2];
-        const url = prefix === "confirm_" ? `/debug/confirm/${n}`
+        const url = prefix === "reg_"     ? `/debug/reg/${n}`
+                  : prefix === "confirm_" ? `/debug/confirm/${n}`
                   : prefix === "api_"     ? `/debug/api/${n}`
                   : prefix === "yop_"     ? `/debug/yop/${n}`
                   : `/debug/${n}`;
@@ -611,6 +612,15 @@ def api_logs():
 @app.route("/debug/<int:idx>")
 def debug_screenshot(idx: int):
     path = f"debug_{idx}.png"
+    if not os.path.exists(path):
+        return "Not found", 404
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="image/png")
+
+
+@app.route("/debug/reg/<int:idx>")
+def debug_reg_screenshot(idx: int):
+    path = f"debug_reg_{idx}.png"
     if not os.path.exists(path):
         return "Not found", 404
     with open(path, "rb") as f:
