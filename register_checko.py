@@ -87,10 +87,16 @@ async def create_one_account(browser, email, password, token, idx):
         for i in range(await pwd_inputs.count()):
             await pwd_inputs.nth(i).fill(password)
 
-        # Ставим галочку
-        cb = page.locator('input[type="checkbox"]')
-        if await cb.count() > 0 and not await cb.first.is_checked():
-            await cb.first.click(force=True)
+        # Ставим галочку — кликаем по label потому что сам input скрыт
+        try:
+            cb = page.locator('#personal_information')
+            if await cb.count() > 0 and not await cb.is_checked():
+                # Кликаем по label — он видимый
+                await page.locator('label[for="personal_information"]').click()
+                await page.wait_for_timeout(300)
+                print(f"  [~] Галочка поставлена")
+        except Exception as e:
+            print(f"  [~] Галочка: {e}")
 
         # Скриншот заполненной формы
         await page.screenshot(path=f"debug_filled_{idx}.png", full_page=True)
