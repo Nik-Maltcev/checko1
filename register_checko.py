@@ -269,6 +269,12 @@ async def main():
 
     results = []
 
+    # Открываем CSV сразу — пишем построчно чтобы не терять данные при сбое
+    csv_file = open(OUTPUT_CSV, "w", newline="", encoding="utf-8")
+    csv_writer = csv.DictWriter(csv_file, fieldnames=["login", "password", "api_key"], delimiter="|")
+    csv_writer.writeheader()
+    csv_file.flush()
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=HEADLESS,
@@ -332,6 +338,11 @@ async def main():
                 "api_key": api_key,
             })
 
+            # Пишем сразу — данные не потеряются при сбое
+            csv_writer.writerow({"login": email, "password": password, "api_key": api_key})
+            csv_file.flush()
+            print(f"  [+] Сохранено в CSV ({len(results)}/{ACCOUNTS_COUNT})")
+
             await context.close()
 
             # Пауза между регистрациями
@@ -341,12 +352,9 @@ async def main():
 
         await browser.close()
 
-    # 5. Сохранить CSV
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["login", "password", "api_key"], delimiter="|")
-        writer.writeheader()
-        writer.writerows(results)
+    csv_file.close()
 
+    # 5. Итог
     _set_running_flag(False)
     print(f"\n[✓] Готово! Сохранено {len(results)} аккаунтов в {OUTPUT_CSV}")
 
