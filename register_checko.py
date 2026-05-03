@@ -1,9 +1,9 @@
 """
 Скрипт для массовой регистрации аккаунтов на checko.ru
-с использованием временных email от mail.tm
+с использованием временных email от 1secmail (без регистрации, без ключа)
 
 Зависимости:
-    pip install playwright requests python-dotenv
+    pip install playwright requests
     playwright install chromium
 """
 
@@ -24,9 +24,13 @@ ACCOUNTS_COUNT = int(os.environ.get("ACCOUNTS_COUNT", 30))
 OUTPUT_CSV     = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
 HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
 DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
-MAIL_TM_BASE = "https://api.mail.tm"
 CHECKO_REGISTER = "https://checko.ru/sign-up"
 CHECKO_PROFILE  = "https://checko.ru/user/account/api"
+
+# 1secmail API — бесплатно, без ключа, домены менее известны как disposable
+SECMAIL_BASE    = "https://www.1secmail.com/api/v1"
+SECMAIL_DOMAINS = ["1secmail.com", "1secmail.org", "1secmail.net",
+                   "kzccv.com", "qiott.com", "wuuvo.com"]
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -39,71 +43,48 @@ def random_username(length: int = 10) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
-# ─── mail.tm helpers ──────────────────────────────────────────────────────────
+# ─── 1secmail helpers ─────────────────────────────────────────────────────────
 
-def get_available_domain() -> str:
-    """Получить первый доступный домен от mail.tm."""
-    r = requests.get(f"{MAIL_TM_BASE}/domains", timeout=15)
-    r.raise_for_status()
-    domains = r.json().get("hydra:member", [])
-    if not domains:
-        raise RuntimeError("mail.tm не вернул ни одного домена")
-    return domains[0]["domain"]
+def create_temp_email() -> tuple[str, str]:
+    """Генерируем адрес на случайном домене 1secmail. Возвращает (email, login, domain)."""
+    login  = random_username(12)
+    domain = random.choice(SECMAIL_DOMAINS)
+    return f"{login}@{domain}", login, domain
 
 
-def create_temp_email(address: str, password: str) -> dict:
-    """Создать аккаунт на mail.tm и вернуть данные."""
-    r = requests.post(
-        f"{MAIL_TM_BASE}/accounts",
-        json={"address": address, "password": password},
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-def get_mail_token(address: str, password: str) -> str:
-    """Получить JWT-токен для доступа к почте."""
-    r = requests.post(
-        f"{MAIL_TM_BASE}/token",
-        json={"address": address, "password": password},
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()["token"]
-
-
-def wait_for_confirmation_link(token: str, timeout: int = 120) -> str | None:
+def wait_for_confirmation_link(login: str, domain: str, timeout: int = 120) -> str | None:
     """
-    Ждать письмо с подтверждением и вернуть ссылку.
-    Возвращает None если письмо не пришло за timeout секунд.
+    Ждать письмо с подтверждением на 1secmail и вернуть ссылку.
     """
-    headers = {"Authorization": f"Bearer {token}"}
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = requests.get(f"{MAIL_TM_BASE}/messages", headers=headers, timeout=15)
-        if r.status_code == 200:
-            messages = r.json().get("hydra:member", [])
+        try:
+            r = requests.get(
+                f"{SECMAIL_BASE}/",
+                params={"action": "getMessages", "login": login, "domain": domain},
+                timeout=15,
+            )
+            messages = r.json() if r.status_code == 200 else []
             for msg in messages:
-                # Получить полное тело письма
                 msg_id = msg["id"]
                 detail = requests.get(
-                    f"{MAIL_TM_BASE}/messages/{msg_id}",
-                    headers=headers,
+                    f"{SECMAIL_BASE}/",
+                    params={"action": "readMessage", "login": login,
+                            "domain": domain, "id": msg_id},
                     timeout=15,
                 ).json()
-                body = detail.get("text", "") + detail.get("html", "")
-                # Ищем ссылку подтверждения
+                body = detail.get("textBody", "") + detail.get("htmlBody", "")
                 links = re.findall(r'https?://checko\.ru[^\s"\'<>]+', body)
                 confirm_links = [
                     l for l in links
                     if any(kw in l for kw in ("confirm", "verify", "activate", "sign", "token", "email"))
                 ]
-                # Если специфичных нет — берём любую ссылку на checko.ru
                 if not confirm_links:
-                    confirm_links = links
+                    confirm_links = [l for l in links if l != "https://checko.ru"]
                 if confirm_links:
                     return confirm_links[0]
+        except Exception as e:
+            print(f"  [~] Ошибка проверки почты: {e}")
         time.sleep(5)
     return None
 
@@ -263,10 +244,6 @@ async def main():
     print(f"[*] Старт. Создаём {ACCOUNTS_COUNT} аккаунтов...")
     _set_running_flag(True, ACCOUNTS_COUNT)
 
-    # Получаем домен один раз
-    domain = get_available_domain()
-    print(f"[*] Используем домен: @{domain}")
-
     results = []
 
     # Открываем CSV сразу — пишем построчно чтобы не терять данные при сбое
@@ -284,18 +261,11 @@ async def main():
         for i in range(1, ACCOUNTS_COUNT + 1):
             print(f"\n[{i}/{ACCOUNTS_COUNT}] Создаём аккаунт...")
 
-            username = random_username()
             password = random_password()
-            email = f"{username}@{domain}"
 
-            # 1. Создать временный email
-            try:
-                create_temp_email(email, password)
-                mail_token = get_mail_token(email, password)
-                print(f"  [+] Временный email: {email}")
-            except Exception as e:
-                print(f"  [!] Ошибка создания email: {e}")
-                continue
+            # 1. Генерируем временный email (1secmail — без регистрации)
+            email, mail_login, mail_domain = create_temp_email()
+            print(f"  [+] Временный email: {email}")
 
             # 2. Регистрация на checko.ru
             context = await browser.new_context(
@@ -316,13 +286,13 @@ async def main():
             print("  [+] Форма отправлена, ждём письмо...")
 
             # 3. Ждём письмо с подтверждением
-            confirm_url = wait_for_confirmation_link(mail_token, timeout=90)
+            confirm_url = wait_for_confirmation_link(mail_login, mail_domain, timeout=90)
             if confirm_url:
                 print(f"  [+] Ссылка подтверждения: {confirm_url[:60]}...")
                 await confirm_email_in_browser(page, confirm_url)
                 print("  [+] Email подтверждён")
             else:
-                print("  [~] Письмо не пришло (возможно, подтверждение не нужно)")
+                print("  [~] Письмо не пришло за 90с")
 
             # 4. Получить API-ключ
             api_key = await get_api_key(page)
@@ -332,11 +302,7 @@ async def main():
                 print("  [~] API-ключ не найден (проверь вручную)")
                 api_key = "NOT_FOUND"
 
-            results.append({
-                "login": email,
-                "password": password,
-                "api_key": api_key,
-            })
+            results.append({"login": email, "password": password, "api_key": api_key})
 
             # Пишем сразу — данные не потеряются при сбое
             csv_writer.writerow({"login": email, "password": password, "api_key": api_key})
@@ -354,7 +320,7 @@ async def main():
 
     csv_file.close()
 
-    # 5. Итог
+    # Итог
     _set_running_flag(False)
     print(f"\n[✓] Готово! Сохранено {len(results)} аккаунтов в {OUTPUT_CSV}")
 
