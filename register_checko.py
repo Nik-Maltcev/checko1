@@ -50,15 +50,29 @@ def mailtm_wait_link(token, timeout=60):
     """Ждём письмо от checko и возвращаем первую ссылку."""
     headers = {"Authorization": f"Bearer {token}"}
     deadline = time.time() + timeout
+    seen = set()
     while time.time() < deadline:
-        r = requests.get(f"{MAIL_TM}/messages", headers=headers, timeout=15)
-        for msg in r.json().get("hydra:member", []):
-            detail = requests.get(f"{MAIL_TM}/messages/{msg['id']}", headers=headers, timeout=15).json()
-            body = (detail.get("text", "") or "") + (detail.get("html", "") or "")
-            links = re.findall(r'https?://checko\.ru[^\s"\'<>\)]+', body)
-            links = [l for l in links if l.rstrip("/") != "https://checko.ru"]
-            if links:
-                return links[0]
+        try:
+            r = requests.get(f"{MAIL_TM}/messages", headers=headers, timeout=15)
+            for msg in r.json().get("hydra:member", []):
+                if msg["id"] in seen:
+                    continue
+                seen.add(msg["id"])
+                detail = requests.get(f"{MAIL_TM}/messages/{msg['id']}", headers=headers, timeout=15).json()
+                # text — строка, html — массив строк (по документации)
+                text_part = detail.get("text", "") or ""
+                html_part = detail.get("html", []) or []
+                if isinstance(html_part, list):
+                    html_part = " ".join(html_part)
+                body = text_part + " " + html_part
+                print(f"  [~] Письмо: {detail.get('subject', '?')}")
+                links = re.findall(r'https?://checko\.ru[^\s"\'<>\)]+', body)
+                links = [l for l in links if l.rstrip("/") != "https://checko.ru"]
+                if links:
+                    return links[0]
+                print(f"  [~] Ссылка checko.ru не найдена в письме")
+        except Exception as e:
+            print(f"  [~] Ошибка почты: {e}")
         time.sleep(3)
     return None
 
