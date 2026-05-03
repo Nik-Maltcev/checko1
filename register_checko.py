@@ -52,18 +52,21 @@ async def open_yopmail(browser, username: str):
         "Chrome/124.0.0.0 Safari/537.36"
     ))
     page = await ctx.new_page()
-    await page.goto(YOPMAIL_URL, wait_until="networkidle", timeout=30_000)
-    await page.wait_for_timeout(1500)
-
-    # Вводим имя ящика в поле
-    inp = page.locator('input#login').first
-    if not await inp.is_visible():
-        inp = page.locator('input[name="login"]').first
-    await inp.fill(username)
-
-    btn = page.locator('button.md-but-primary, button[type="submit"]').first
-    await btn.click()
+    # Сразу открываем ящик по прямому URL — не нужно кликать кнопку
+    await page.goto(f"https://yopmail.com/en/wm?login={username}",
+                    wait_until="networkidle", timeout=30_000)
     await page.wait_for_timeout(2000)
+
+    # Скриншот для отладки
+    try:
+        import glob
+        existing = glob.glob("debug_yop_*.png")
+        if len(existing) < 2:
+            idx = len(existing) + 1
+            await page.screenshot(path=f"debug_yop_{idx}.png", full_page=True)
+            print(f"  [~] Скриншот yopmail: debug_yop_{idx}.png")
+    except Exception:
+        pass
 
     return page, ctx
 
