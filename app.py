@@ -16,6 +16,7 @@ OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
 
 # Хранит subprocess объект пока скрипт работает
 _proc: subprocess.Popen | None = None
+_log_lines: list[str] = []  # последние строки вывода скрипта
 
 HTML = """
 <!DOCTYPE html>
@@ -225,7 +226,36 @@ HTML = """
       transition: width 0.4s ease;
     }
 
-    .toast {
+    .log-panel {
+      margin-top: 20px;
+      background: #0a0e17;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 16px;
+      display: none;
+    }
+    .log-panel.open { display: block; }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 0.75rem;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .log-body {
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 0.78rem;
+      color: #64748b;
+      max-height: 220px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .log-body .ok   { color: #22c55e; }
+    .log-body .warn { color: #f59e0b; }
+    .log-body .err  { color: #f87171; }
       position: fixed;
       bottom: 24px; right: 24px;
       background: #1e293b;
@@ -258,6 +288,7 @@ HTML = """
     </span>
     <button class="btn btn-secondary" onclick="toggleSettings()" id="btn-settings">⚙ Настройки</button>
     <button class="btn btn-secondary" onclick="loadData()">↻ Обновить</button>
+    <button class="btn btn-secondary" onclick="toggleLog()" id="btn-log">☰ Лог</button>
     <button class="btn btn-red"  id="btn-stop"  onclick="stopScript()"  style="display:none">■ Стоп</button>
     <button class="btn btn-green" id="btn-start" onclick="startScript()">▶ Запустить</button>
     <a class="btn btn-primary" href="/download" id="btn-download">⬇ Скачать CSV</a>
@@ -310,6 +341,14 @@ HTML = """
 
 <div class="toast" id="toast"></div>
 
+<div class="log-panel" id="log-panel">
+  <div class="log-header">
+    <span>Лог выполнения</span>
+    <button class="copy-btn" onclick="document.getElementById('log-panel').classList.remove('open')">✕</button>
+  </div>
+  <div class="log-body" id="log-body"></div>
+</div>
+
 <script>
   let autoRefresh = null;
 
@@ -318,6 +357,26 @@ HTML = """
     t.textContent = msg;
     t.className = "toast show" + (isError ? " error" : "");
     setTimeout(() => { t.className = "toast"; }, 3000);
+  }
+
+  function toggleLog() {
+    const p = document.getElementById("log-panel");
+    p.classList.toggle("open");
+    if (p.classList.contains("open")) loadLogs();
+  }
+
+  async function loadLogs() {
+    const res = await fetch("/api/logs");
+    const data = await res.json();
+    const body = document.getElementById("log-body");
+    body.innerHTML = data.lines.map(line => {
+      let cls = "";
+      if (line.includes("[+]") || line.includes("✓")) cls = "ok";
+      else if (line.includes("[!]") || line.includes("Ошибка")) cls = "err";
+      else if (line.includes("[~]") || line.includes("WARNING")) cls = "warn";
+      return `<div class="${cls}">${line}</div>`;
+    }).join("") || '<div style="color:#334155">Лог пуст</div>';
+    body.scrollTop = body.scrollHeight;
   }
 
   function toggleSettings() {
@@ -383,7 +442,7 @@ HTML = """
       pb.style.width = pct + "%";
       btnStart.style.display = "none";
       btnStop.style.display  = "inline-flex";
-      if (!autoRefresh) autoRefresh = setInterval(loadData, 3000);
+      if (!autoRefresh) autoRefresh = setInterval(() => { loadData(); loadLogs(); }, 3000);
     } else {
       dot.className = data.rows.length > 0 ? "dot done" : "dot idle";
       stxt.textContent = data.rows.length > 0 ? "Готово" : "Ожидание";
@@ -496,9 +555,25 @@ def api_start():
 
     try:
         _proc = subprocess.Popen(
-            [sys.executable, "register_checko.py"],
+            [sys.executable, "-u", "register_checko.py"],
             env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
+        # Пишем вывод скрипта в stdout Flask (видно в Railway Logs)
+        import threading
+        def _pipe_logs(proc):
+            global _log_lines
+            _log_lines = []
+            for line in proc.stdout:
+                line = line.rstrip()
+                print(f"[register] {line}", flush=True)
+                _log_lines.append(line)
+                if len(_log_lines) > 200:
+                    _log_lines = _log_lines[-200:]
+        threading.Thread(target=_pipe_logs, args=(_proc,), daemon=True).start()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
@@ -515,6 +590,11 @@ def api_stop():
     with open(".status", "w") as f:
         f.write("False|0")
     return jsonify({"ok": True})
+
+
+@app.route("/api/logs")
+def api_logs():
+    return jsonify({"lines": _log_lines[-50:]})
 
 
 @app.route("/download")
