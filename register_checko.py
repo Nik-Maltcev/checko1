@@ -25,7 +25,7 @@ OUTPUT_CSV     = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
 HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
 DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
 MAIL_TM_BASE = "https://api.mail.tm"
-CHECKO_REGISTER = "https://checko.ru/user/new_session"
+CHECKO_REGISTER = "https://checko.ru/sign-up"
 CHECKO_PROFILE  = "https://checko.ru/user/profile"
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -95,7 +95,13 @@ def wait_for_confirmation_link(token: str, timeout: int = 120) -> str | None:
                 body = detail.get("text", "") + detail.get("html", "")
                 # Ищем ссылку подтверждения
                 links = re.findall(r'https?://checko\.ru[^\s"\'<>]+', body)
-                confirm_links = [l for l in links if "confirm" in l or "verify" in l or "activate" in l]
+                confirm_links = [
+                    l for l in links
+                    if any(kw in l for kw in ("confirm", "verify", "activate", "sign", "token", "email"))
+                ]
+                # Если специфичных нет — берём любую ссылку на checko.ru
+                if not confirm_links:
+                    confirm_links = links
                 if confirm_links:
                     return confirm_links[0]
         time.sleep(5)
@@ -117,62 +123,29 @@ async def register_on_checko(
         await page.goto(CHECKO_REGISTER, wait_until="networkidle", timeout=30_000)
         await page.wait_for_timeout(1500)
 
-        # Попробуем найти таб/кнопку "Регистрация" если страница совмещённая
-        reg_tab = page.locator("text=Регистрация").first
-        if await reg_tab.is_visible():
-            await reg_tab.click()
-            await page.wait_for_timeout(800)
+        # Email
+        await page.locator('input[type="email"]').first.fill(email)
 
-        # Заполняем поля — пробуем разные селекторы
-        email_selectors = [
-            'input[name="email"]',
-            'input[type="email"]',
-            'input[placeholder*="mail" i]',
-            'input[placeholder*="почт" i]',
-            '#email',
-        ]
-        for sel in email_selectors:
-            el = page.locator(sel).first
-            if await el.is_visible():
-                await el.fill(email)
-                break
+        # Пароль + подтверждение — все input[type=password] на странице
+        pwd_fields = page.locator('input[type="password"]')
+        count = await pwd_fields.count()
+        for i in range(count):
+            await pwd_fields.nth(i).fill(password)
 
-        password_selectors = [
-            'input[name="password"]',
-            'input[type="password"]',
-            '#password',
-        ]
-        for sel in password_selectors:
-            el = page.locator(sel).first
-            if await el.is_visible():
-                await el.fill(password)
-                break
+        # Чекбокс согласия с пользовательским соглашением
+        checkbox = page.locator('input[type="checkbox"]').first
+        if await checkbox.is_visible():
+            is_checked = await checkbox.is_checked()
+            if not is_checked:
+                await checkbox.check()
 
-        # Поле подтверждения пароля (если есть)
-        confirm_selectors = [
-            'input[name="password_confirmation"]',
-            'input[name="confirm_password"]',
-            'input[name="password2"]',
-        ]
-        for sel in confirm_selectors:
-            el = page.locator(sel).first
-            if await el.is_visible():
-                await el.fill(password)
-                break
+        await page.wait_for_timeout(500)
 
-        # Кнопка отправки
-        submit_selectors = [
-            'button[type="submit"]',
-            'input[type="submit"]',
-            'button:has-text("Зарегистрироваться")',
-            'button:has-text("Создать")',
-            'button:has-text("Регистрация")',
-        ]
-        for sel in submit_selectors:
-            el = page.locator(sel).first
-            if await el.is_visible():
-                await el.click()
-                break
+        # Кнопка "Зарегистрироваться"
+        submit = page.locator('button:has-text("Зарегистрироваться")').first
+        if not await submit.is_visible():
+            submit = page.locator('button[type="submit"]').first
+        await submit.click()
 
         await page.wait_for_timeout(3000)
 
@@ -202,6 +175,16 @@ async def confirm_email_in_browser(page, confirm_url: str) -> bool:
     try:
         await page.goto(confirm_url, wait_until="networkidle", timeout=30_000)
         await page.wait_for_timeout(2000)
+        # Скриншот после подтверждения
+        try:
+            import glob
+            existing = glob.glob("debug_confirm_*.png")
+            if len(existing) < 3:
+                idx = len(existing) + 1
+                await page.screenshot(path=f"debug_confirm_{idx}.png", full_page=True)
+                print(f"  [~] Скриншот подтверждения: debug_confirm_{idx}.png")
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"  [!] Ошибка подтверждения email: {e}")

@@ -612,6 +612,15 @@ def debug_screenshot(idx: int):
         return Response(f.read(), mimetype="image/png")
 
 
+@app.route("/debug/confirm/<int:idx>")
+def debug_confirm_screenshot(idx: int):
+    path = f"debug_confirm_{idx}.png"
+    if not os.path.exists(path):
+        return "Not found", 404
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="image/png")
+
+
 @app.route("/download")
 def download():
     rows = read_csv()
