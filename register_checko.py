@@ -24,6 +24,9 @@ OUTPUT_CSV     = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
 HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
 DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
 MAIL_TM        = "https://api.mail.tm"
+# Прокси: задать через env PROXY_LIST (через запятую) или оставить пустым
+# Формат: http://user:pass@host:port или http://host:port
+PROXY_LIST     = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(",") if p.strip()]
 
 
 def rand_pass(n=14):
@@ -51,15 +54,21 @@ def mailtm_wait_link(token, timeout=60):
     headers = {"Authorization": f"Bearer {token}"}
     deadline = time.time() + timeout
     seen = set()
+    attempt = 0
     while time.time() < deadline:
+        attempt += 1
         try:
             r = requests.get(f"{MAIL_TM}/messages", headers=headers, timeout=15)
-            for msg in r.json().get("hydra:member", []):
+            data = r.json()
+            total = data.get("hydra:totalItems", 0)
+            msgs = data.get("hydra:member", [])
+            if attempt <= 3 or total > 0:
+                print(f"  [~] Проверка #{attempt}: {total} писем, статус {r.status_code}")
+            for msg in msgs:
                 if msg["id"] in seen:
                     continue
                 seen.add(msg["id"])
                 detail = requests.get(f"{MAIL_TM}/messages/{msg['id']}", headers=headers, timeout=15).json()
-                # text — строка, html — массив строк (по документации)
                 text_part = detail.get("text", "") or ""
                 html_part = detail.get("html", []) or []
                 if isinstance(html_part, list):
@@ -73,17 +82,18 @@ def mailtm_wait_link(token, timeout=60):
                 print(f"  [~] Ссылка checko.ru не найдена в письме")
         except Exception as e:
             print(f"  [~] Ошибка почты: {e}")
-        time.sleep(3)
+        time.sleep(5)
     return None
 
 
 # ─── Один аккаунт ─────────────────────────────────────────────────────────────
 
-async def create_one_account(browser, email, password, token, idx):
+async def create_one_account(browser, email, password, token, idx, proxy=None):
     """Полный цикл: регистрация → подтверждение → логин → API ключ."""
 
     ctx = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+        proxy=proxy,
     )
     page = await ctx.new_page()
 
@@ -228,9 +238,14 @@ async def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
 
-        for i in range(1, ACCOUNTS_COUNT + 1):
+        success_count = 0
+        attempt = 0
+        max_attempts = ACCOUNTS_COUNT * 3  # не больше 3 попыток на аккаунт
+
+        while success_count < ACCOUNTS_COUNT and attempt < max_attempts:
+            attempt += 1
             print(f"\n{'='*50}")
-            print(f"[{i}/{ACCOUNTS_COUNT}]")
+            print(f"[{success_count+1}/{ACCOUNTS_COUNT}] (попытка #{attempt})")
 
             user = rand_user()
             email = f"{user}@{domain}"
@@ -243,22 +258,30 @@ async def main():
                 print(f"  [+] Почта: {email}")
             except Exception as e:
                 print(f"  [!] mail.tm ошибка: {e}")
+                await asyncio.sleep(2)
                 continue
 
-            # Полный цикл
-            api_key = await create_one_account(browser, email, password, token, i)
+            # Выбираем прокси для этого аккаунта
+            proxy_cfg = None
+            if PROXY_LIST:
+                proxy_url = random.choice(PROXY_LIST)
+                proxy_cfg = {"server": proxy_url}
+                print(f"  [~] Прокси: {proxy_url}")
 
-            row = {"login": email, "password": password, "api_key": api_key or "NOT_FOUND"}
-            results.append(row)
-            w.writerow(row)
-            f.flush()
+            # Полный цикл
+            api_key = await create_one_account(browser, email, password, token, attempt, proxy_cfg)
 
             if api_key:
-                print(f"  [✓] Готово: {api_key[:24]}...")
+                success_count += 1
+                row = {"login": email, "password": password, "api_key": api_key}
+                results.append(row)
+                w.writerow(row)
+                f.flush()
+                print(f"  [✓] Готово: {api_key[:24]}... ({success_count}/{ACCOUNTS_COUNT})")
             else:
-                print(f"  [✗] API ключ не получен")
+                print(f"  [✗] Не удалось — пробуем заново с другой почтой")
 
-            if i < ACCOUNTS_COUNT:
+            if success_count < ACCOUNTS_COUNT:
                 print(f"  [~] Пауза {DELAY_BETWEEN}с")
                 await asyncio.sleep(DELAY_BETWEEN)
 

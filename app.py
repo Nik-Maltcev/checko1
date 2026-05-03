@@ -310,6 +310,10 @@ HTML = """
       <label>Headless браузер</label>
       <input type="text" id="cfg-headless" value="true" placeholder="true / false"/>
     </div>
+    <div class="field">
+      <label>Прокси (через запятую)</label>
+      <input type="text" id="cfg-proxy" value="" placeholder="http://user:pass@host:port"/>
+    </div>
   </div>
 </div>
 
@@ -408,14 +412,15 @@ HTML = """
   }
 
   async function startScript() {
-    const count   = document.getElementById("cfg-count").value;
-    const delay   = document.getElementById("cfg-delay").value;
+    const count    = document.getElementById("cfg-count").value;
+    const delay    = document.getElementById("cfg-delay").value;
     const headless = document.getElementById("cfg-headless").value.trim();
+    const proxy    = document.getElementById("cfg-proxy").value.trim();
 
     const res = await fetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count: parseInt(count), delay: parseInt(delay), headless: headless === "true" })
+      body: JSON.stringify({ count: parseInt(count), delay: parseInt(delay), headless: headless === "true", proxy: proxy })
     });
     const data = await res.json();
     if (data.ok) {
@@ -567,6 +572,7 @@ def api_start():
     env["ACCOUNTS_COUNT"] = str(count)
     env["DELAY_BETWEEN"]  = str(delay)
     env["HEADLESS"]       = str(headless)
+    env["PROXY_LIST"]     = body.get("proxy", "")
 
     try:
         _proc = subprocess.Popen(
