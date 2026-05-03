@@ -130,6 +130,10 @@ async def register_on_checko(
 
         await page.wait_for_timeout(3000)
 
+        # Логируем URL после отправки — сразу видно что произошло
+        current_url = page.url
+        print(f"  [~] URL после формы: {current_url}")
+
         # Скриншот для отладки — сохраняем первые 3
         try:
             import glob
@@ -140,6 +144,15 @@ async def register_on_checko(
                 print(f"  [~] Скриншот: debug_{idx}.png")
         except Exception:
             pass
+
+        # Проверяем нет ли ошибки на странице
+        body_text = await page.inner_text("body")
+        error_keywords = ["недопустим", "некорректн", "уже зарегистрирован",
+                          "ошибка", "error", "invalid", "already"]
+        for kw in error_keywords:
+            if kw.lower() in body_text.lower():
+                print(f"  [!] Возможная ошибка на странице: найдено '{kw}'")
+                break
 
         return True
 
@@ -172,6 +185,35 @@ async def confirm_email_in_browser(page, confirm_url: str) -> bool:
         return False
 
 
+async def login_on_checko(page, email: str, password: str) -> bool:
+    """Залогиниться после подтверждения email."""
+    try:
+        current_url = page.url
+        # Если уже залогинены — не нужно
+        if "login" not in current_url and "sign" not in current_url:
+            print(f"  [~] Уже авторизованы (URL: {current_url})")
+            return True
+
+        await page.goto("https://checko.ru/login", wait_until="networkidle", timeout=30_000)
+        await page.wait_for_timeout(1000)
+
+        await page.locator('input[type="email"]').first.fill(email)
+        pwd = page.locator('input[type="password"]').first
+        await pwd.fill(password)
+
+        submit = page.locator('button:has-text("Войти")').first
+        if not await submit.is_visible():
+            submit = page.locator('button[type="submit"]').first
+        await submit.click()
+
+        await page.wait_for_timeout(3000)
+        print(f"  [~] URL после логина: {page.url}")
+        return True
+    except Exception as e:
+        print(f"  [!] Ошибка логина: {e}")
+        return False
+
+
 async def get_api_key(page) -> str | None:
     """
     Зайти на страницу API и вытащить ключ после текста 'Ваш API ключ'.
@@ -179,6 +221,8 @@ async def get_api_key(page) -> str | None:
     try:
         await page.goto(CHECKO_PROFILE, wait_until="networkidle", timeout=30_000)
         await page.wait_for_timeout(2000)
+
+        print(f"  [~] URL страницы API: {page.url}")
 
         # Скриншот страницы API для отладки
         try:
@@ -291,8 +335,11 @@ async def main():
                 print(f"  [+] Ссылка подтверждения: {confirm_url[:60]}...")
                 await confirm_email_in_browser(page, confirm_url)
                 print("  [+] Email подтверждён")
+                # После подтверждения может быть редирект на /login — логинимся
+                await login_on_checko(page, email, password)
             else:
-                print("  [~] Письмо не пришло за 90с")
+                print("  [~] Письмо не пришло за 90с — пробуем войти напрямую")
+                await login_on_checko(page, email, password)
 
             # 4. Получить API-ключ
             api_key = await get_api_key(page)
