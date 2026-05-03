@@ -27,10 +27,10 @@ DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
 CHECKO_REGISTER = "https://checko.ru/sign-up"
 CHECKO_PROFILE  = "https://checko.ru/user/account/api"
 
-# 1secmail API — бесплатно, без ключа, домены менее известны как disposable
-SECMAIL_BASE    = "https://www.1secmail.com/api/v1"
-SECMAIL_DOMAINS = ["1secmail.com", "1secmail.org", "1secmail.net",
-                   "kzccv.com", "qiott.com", "wuuvo.com"]
+# Guerrilla Mail API — бесплатно, без ключа, хорошая доставляемость
+GUERRILLA_BASE = "https://api.guerrillamail.com/ajax.php"
+GUERRILLA_DOMAINS = ["guerrillamailblock.com", "grr.la", "guerrillamail.info",
+                     "sharklasers.com", "guerrillamail.biz", "spam4.me"]
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -43,46 +43,71 @@ def random_username(length: int = 10) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
-# ─── 1secmail helpers ─────────────────────────────────────────────────────────
+# ─── Guerrilla Mail helpers ───────────────────────────────────────────────────
 
-def create_temp_email() -> tuple[str, str]:
-    """Генерируем адрес на случайном домене 1secmail. Возвращает (email, login, domain)."""
-    login  = random_username(12)
-    domain = random.choice(SECMAIL_DOMAINS)
-    return f"{login}@{domain}", login, domain
-
-
-def wait_for_confirmation_link(login: str, domain: str, timeout: int = 120) -> str | None:
+def create_temp_email() -> tuple[str, str, str, str]:
     """
-    Ждать письмо с подтверждением на 1secmail и вернуть ссылку.
+    Создаём сессию на Guerrilla Mail.
+    Возвращает (email, login, domain, sid_token).
+    """
+    domain = random.choice(GUERRILLA_DOMAINS)
+    login  = random_username(12)
+    r = requests.get(
+        GUERRILLA_BASE,
+        params={
+            "f":          "set_email_user",
+            "email_user": login,
+            "lang":       "en",
+            "site":       domain,
+        },
+        timeout=15,
+    )
+    data      = r.json()
+    sid_token = data.get("sid_token", "")
+    email     = data.get("email_addr", f"{login}@{domain}")
+    # email может вернуться с другим доменом — берём как есть
+    parts  = email.split("@")
+    login  = parts[0]
+    domain = parts[1] if len(parts) > 1 else domain
+    return email, login, domain, sid_token
+
+
+def wait_for_confirmation_link(login: str, domain: str, sid_token: str,
+                                timeout: int = 120) -> str | None:
+    """
+    Ждать письмо с подтверждением на Guerrilla Mail и вернуть ссылку.
     """
     deadline = time.time() + timeout
+    seq = 0
     while time.time() < deadline:
         try:
             r = requests.get(
-                f"{SECMAIL_BASE}/",
-                params={"action": "getMessages", "login": login, "domain": domain},
+                GUERRILLA_BASE,
+                params={"f": "check_email", "seq": seq, "sid_token": sid_token},
                 timeout=15,
             )
-            messages = r.json() if r.status_code == 200 else []
+            data = r.json()
+            messages = data.get("list", [])
             for msg in messages:
-                msg_id = msg["id"]
+                msg_id = msg.get("mail_id")
                 detail = requests.get(
-                    f"{SECMAIL_BASE}/",
-                    params={"action": "readMessage", "login": login,
-                            "domain": domain, "id": msg_id},
+                    GUERRILLA_BASE,
+                    params={"f": "fetch_email", "email_id": msg_id,
+                            "sid_token": sid_token},
                     timeout=15,
                 ).json()
-                body = detail.get("textBody", "") + detail.get("htmlBody", "")
+                body = detail.get("mail_body", "") + detail.get("mail_text_only", "")
                 links = re.findall(r'https?://checko\.ru[^\s"\'<>]+', body)
                 confirm_links = [
                     l for l in links
-                    if any(kw in l for kw in ("confirm", "verify", "activate", "sign", "token", "email"))
+                    if any(kw in l for kw in ("confirm", "verify", "activate",
+                                              "sign", "token", "email", "user"))
                 ]
                 if not confirm_links:
-                    confirm_links = [l for l in links if l != "https://checko.ru"]
+                    confirm_links = [l for l in links if l.rstrip("/") != "https://checko.ru"]
                 if confirm_links:
                     return confirm_links[0]
+            seq = data.get("seq", seq)
         except Exception as e:
             print(f"  [~] Ошибка проверки почты: {e}")
         time.sleep(5)
@@ -307,8 +332,8 @@ async def main():
 
             password = random_password()
 
-            # 1. Генерируем временный email (1secmail — без регистрации)
-            email, mail_login, mail_domain = create_temp_email()
+            # 1. Генерируем временный email (Guerrilla Mail — без регистрации)
+            email, mail_login, mail_domain, sid_token = create_temp_email()
             print(f"  [+] Временный email: {email}")
 
             # 2. Регистрация на checko.ru
@@ -330,7 +355,7 @@ async def main():
             print("  [+] Форма отправлена, ждём письмо...")
 
             # 3. Ждём письмо с подтверждением
-            confirm_url = wait_for_confirmation_link(mail_login, mail_domain, timeout=90)
+            confirm_url = wait_for_confirmation_link(mail_login, mail_domain, sid_token, timeout=90)
             if confirm_url:
                 print(f"  [+] Ссылка подтверждения: {confirm_url[:60]}...")
                 await confirm_email_in_browser(page, confirm_url)
