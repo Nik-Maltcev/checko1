@@ -374,6 +374,12 @@ HTML = """
       if (line.includes("[+]") || line.includes("✓")) cls = "ok";
       else if (line.includes("[!]") || line.includes("Ошибка")) cls = "err";
       else if (line.includes("[~]") || line.includes("WARNING")) cls = "warn";
+      // Скриншоты — кликабельная ссылка
+      const screenshotMatch = line.match(/debug_(\d+)\.png/);
+      if (screenshotMatch) {
+        const n = screenshotMatch[1];
+        return `<div class="${cls}">${line} → <a href="/debug/${n}" target="_blank" style="color:#7dd3fc">открыть</a></div>`;
+      }
       return `<div class="${cls}">${line}</div>`;
     }).join("") || '<div style="color:#334155">Лог пуст</div>';
     body.scrollTop = body.scrollHeight;
@@ -595,6 +601,15 @@ def api_stop():
 @app.route("/api/logs")
 def api_logs():
     return jsonify({"lines": _log_lines[-50:]})
+
+
+@app.route("/debug/<int:idx>")
+def debug_screenshot(idx: int):
+    path = f"debug_{idx}.png"
+    if not os.path.exists(path):
+        return "Not found", 404
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="image/png")
 
 
 @app.route("/download")

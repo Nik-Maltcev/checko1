@@ -175,6 +175,18 @@ async def register_on_checko(
                 break
 
         await page.wait_for_timeout(3000)
+
+        # Скриншот для отладки — сохраняем первые 3
+        try:
+            import glob
+            existing = glob.glob("debug_*.png")
+            if len(existing) < 3:
+                idx = len(existing) + 1
+                await page.screenshot(path=f"debug_{idx}.png", full_page=True)
+                print(f"  [~] Скриншот: debug_{idx}.png")
+        except Exception:
+            pass
+
         return True
 
     except PlaywrightTimeout as e:
