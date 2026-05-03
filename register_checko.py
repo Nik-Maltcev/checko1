@@ -19,11 +19,11 @@ from datetime import datetime
 import requests
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Настройки ────────────────────────────────────────────────────────────────
-ACCOUNTS_COUNT = 30
-OUTPUT_CSV = "checko_accounts.csv"
-HEADLESS = True          # False — видеть браузер, True — фоновый режим
-DELAY_BETWEEN = 5        # секунд между регистрациями (чтобы не банили)
+# ─── Настройки (можно переопределить через env-переменные) ───────────────────
+ACCOUNTS_COUNT = int(os.environ.get("ACCOUNTS_COUNT", 30))
+OUTPUT_CSV     = os.environ.get("OUTPUT_CSV", "checko_accounts.csv")
+HEADLESS       = os.environ.get("HEADLESS", "True").lower() != "false"
+DELAY_BETWEEN  = int(os.environ.get("DELAY_BETWEEN", 5))
 MAIL_TM_BASE = "https://api.mail.tm"
 CHECKO_REGISTER = "https://checko.ru/user/new_session"
 CHECKO_PROFILE  = "https://checko.ru/user/profile"
